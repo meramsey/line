@@ -298,6 +298,11 @@ func (lc *LineClient) setCachedContact(mid string, contact line.Contact) {
 }
 
 func (lc *LineClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
+	source := "resolve_identifier"
+	if createChat {
+		source = "start_chat"
+	}
+	ctx = lc.lookupDiagnosticContext(ctx, source, identifier)
 	contact, err := lc.resolveContactIdentifier(ctx, identifier)
 	if err != nil || contact == nil {
 		return nil, err
@@ -341,7 +346,11 @@ func (lc *LineClient) midToResolveIdentifier(ctx context.Context, mid string) *b
 	}
 }
 
-func (lc *LineClient) SearchUsers(ctx context.Context, query string) ([]*bridgev2.ResolveIdentifierResponse, error) {
+func (lc *LineClient) SearchUsers(ctx context.Context, query string) (response []*bridgev2.ResolveIdentifierResponse, responseErr error) {
+	ctx = lc.lookupDiagnosticContext(ctx, "search", query)
+	defer func() {
+		lookupDiagnostic(ctx, "search", "complete", line.LookupErrorCategory(responseErr), len(response))
+	}()
 	var results []*bridgev2.ResolveIdentifierResponse
 
 	// Exact public ID and MID lookup is shared with start-chat. Only search
@@ -357,9 +366,11 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) ([]*bridgev
 				return []*bridgev2.ResolveIdentifierResponse{r}, nil
 			}
 		}
+		lookupDiagnostic(ctx, "search", "exact_not_returned", line.LookupErrorCategory(err), 0)
 	}
 
 	// Search contacts by display name
+	lookupDiagnostic(ctx, "search", "fallback", "display_name_attempted", 0)
 	client, allMids, err := callLineResult(lc, ctx, func(client *line.Client) ([]string, error) {
 		return client.GetAllContactIdsContext(ctx)
 	})
@@ -367,9 +378,11 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) ([]*bridgev
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to get all contact IDs for search")
+		// Remote error text can contain profile data; log only its category.
+		lookupDiagnostic(ctx, "search", "contact_ids", line.LookupErrorCategory(err), 0)
 		return results, nil
 	}
+	lookupDiagnostic(ctx, "search", "contact_ids", "decoded", len(allMids))
 
 	// Fetch contacts in batches to check display names
 	for i := 0; i < len(allMids); i += 50 {
@@ -380,11 +393,13 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) ([]*bridgev
 		batch := allMids[i:end]
 		contactsResp, err := client.GetContactsV2Context(ctx, batch)
 		if err != nil {
+			lookupDiagnostic(ctx, "search", "contact_batch", line.LookupErrorCategory(err), 0)
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
 			continue
 		}
+		lookupDiagnostic(ctx, "search", "contact_batch", "decoded", len(contactsResp.Contacts))
 		for _, wrapper := range contactsResp.Contacts {
 			c := wrapper.Contact
 			if c.Mid == "" {

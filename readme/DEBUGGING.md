@@ -11,6 +11,9 @@ The existing fully qualified flow IDs (`dev.highest.matrix.line.email_login` and
 
 ## Starting a direct chat
 
+For the unresolved live public-ID failure and opt-in, value-free evidence
+collection, see [Public-ID lookup diagnostics](LOOKUP_DIAGNOSTICS.md).
+
 In the bot management room:
 
 ```text

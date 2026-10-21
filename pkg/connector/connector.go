@@ -98,17 +98,19 @@ func (lc *LineConnector) GetName() bridgev2.BridgeName {
 }
 
 func (lc *LineConnector) GetConfig() (example string, data any, upgrader configupgrade.Upgrader) {
-	const base = "qr_login: false\n"
+	const base = "qr_login: false\nlookup_diagnostics: false\n"
 	return base, &lc.Config, &configupgrade.StructUpgrader{
 		Base: base,
 		SimpleUpgrader: func(helper configupgrade.Helper) {
 			helper.Copy(configupgrade.Bool, "qr_login")
+			helper.Copy(configupgrade.Bool, "lookup_diagnostics")
 		},
 	}
 }
 
 type Config struct {
-	QRLogin bool `yaml:"qr_login"`
+	QRLogin           bool `yaml:"qr_login"`
+	LookupDiagnostics bool `yaml:"lookup_diagnostics"`
 }
 
 func (lc *LineConnector) GetDBMetaTypes() database.MetaTypes {

@@ -428,7 +428,21 @@ func (c *Client) callRPCWithBaseURL(baseURL, service, method string, args ...int
 	return c.callRPCWithBaseURLContext(c.requestContext(), baseURL, service, method, args...)
 }
 
-func (c *Client) callRPCWithBaseURLContext(ctx context.Context, baseURL, service, method string, args ...interface{}) ([]byte, error) {
+func (c *Client) callRPCWithBaseURLContext(ctx context.Context, baseURL, service, method string, args ...interface{}) (result []byte, resultErr error) {
+	diagnose := HasLookupDiagnostics(ctx) && lookupOperation(service, method)
+	diagnostic := LookupDiagnostic{Operation: service + "." + method, Stage: "response"}
+	if diagnose {
+		RecordLookupDiagnostic(ctx, LookupDiagnostic{Operation: diagnostic.Operation, Stage: "request", Outcome: "started"})
+		defer func() {
+			if resultErr != nil {
+				diagnostic.Outcome = LookupErrorCategory(resultErr)
+				if diagnostic.HTTPStatus != 0 {
+					diagnostic.Outcome = "http_error"
+				}
+			}
+			RecordLookupDiagnostic(ctx, diagnostic)
+		}()
+	}
 	url := fmt.Sprintf("%s/%s/%s", baseURL, service, method)
 
 	var bodyBytes []byte
@@ -475,6 +489,10 @@ func (c *Client) callRPCWithBaseURLContext(ctx context.Context, baseURL, service
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	if diagnose {
+		diagnostic.HTTPStatus = resp.StatusCode
+		diagnostic.Shape, diagnostic.APICode, diagnostic.Outcome = lookupResponseShape(respBody)
+	}
 
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))

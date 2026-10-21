@@ -25,7 +25,14 @@ func isCanonicalUserMID(identifier string) bool {
 // resolveContactIdentifier never matches display names or creates portals.
 // Public IDs are resolved afresh: caching an ID->MID mapping could route a
 // reassigned public ID to the wrong recipient. Contact data is cached by MID.
-func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier string) (*line.Contact, error) {
+func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier string) (result *line.Contact, resultErr error) {
+	defer func() {
+		outcome := line.LookupErrorCategory(resultErr)
+		if resultErr == nil && result == nil {
+			outcome = "not_found"
+		}
+		lookupDiagnostic(ctx, "exact", "complete", outcome, 0)
+	}()
 	if err := lc.checkLineCall(ctx); err != nil {
 		return nil, err
 	}
@@ -40,8 +47,10 @@ func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier s
 		cached, ok := lc.contactCache[identifier]
 		lc.cacheMu.Unlock()
 		if ok && cached.Contact.Mid == identifier && time.Since(cached.cachedAt) < contactCacheTTL {
+			lookupDiagnostic(ctx, "exact", "cache", "hit_validated", 1)
 			return &cached.Contact, nil
 		}
+		lookupDiagnostic(ctx, "exact", "cache", "miss_or_unusable", 0)
 		if lc.isOwnMID(identifier) {
 			_, profile, lookupErr := callLineResult(lc, ctx, func(client *line.Client) (*line.Profile, error) {
 				return client.GetProfileContext(ctx)
@@ -56,9 +65,11 @@ func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier s
 			})
 			err = lookupErr
 			if contacts != nil {
+				lookupDiagnostic(ctx, "exact", "contacts", "decoded", len(contacts.Contacts))
 				for key, wrapper := range contacts.Contacts {
 					if strings.ToLower(key) == identifier {
 						if contact != nil {
+							lookupDiagnostic(ctx, "exact", "validation", "ambiguous_keys", 0)
 							return nil, fmt.Errorf("LINE lookup returned ambiguous user MID entries")
 						}
 						contact = &wrapper.Contact
@@ -66,6 +77,7 @@ func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier s
 				}
 			}
 			if err == nil && contact == nil {
+				lookupDiagnostic(ctx, "exact", "fallback", "buddy_attempted", 0)
 				_, buddy, buddyErr := callLineResult(lc, ctx, func(client *line.Client) (*line.BuddyProfile, error) {
 					return client.GetBuddyProfileContext(ctx, identifier)
 				})
@@ -76,6 +88,7 @@ func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier s
 			}
 		}
 	} else {
+		lookupDiagnostic(ctx, "exact", "cache", "public_id_bypass", 0)
 		_, contact, err = callLineResult(lc, ctx, func(client *line.Client) (*line.Contact, error) {
 			return client.FindContactByUseridContext(ctx, identifier)
 		})
@@ -87,15 +100,23 @@ func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier s
 		return nil, fmt.Errorf("LINE identifier lookup failed (the account may restrict ID lookup): %w", err)
 	}
 	if contact == nil || contact.Mid == "" {
+		lookupDiagnostic(ctx, "exact", "validation", "missing_mid_or_contact", 0)
 		return nil, nil
 	}
 	// LINE also uses uppercase MID prefixes/hex digits. Normalize the response
 	// just as we normalize MID input, before validating identity or caching it.
 	// Do not trim response whitespace or accept anything beyond a user MID.
+	lookupDiagnostic(ctx, "exact", "mid_shape", line.UserMIDState(contact.Mid), 0)
 	contact.Mid = strings.ToLower(contact.Mid)
 	if !isCanonicalUserMID(contact.Mid) || isCanonicalUserMID(identifier) && contact.Mid != identifier {
+		outcome := "invalid_mid_shape"
+		if isCanonicalUserMID(contact.Mid) {
+			outcome = "requested_mid_mismatch"
+		}
+		lookupDiagnostic(ctx, "exact", "validation", outcome, 0)
 		return nil, fmt.Errorf("LINE lookup returned an invalid or mismatched user MID")
 	}
 	lc.setCachedContact(contact.Mid, *contact)
+	lookupDiagnostic(ctx, "exact", "validation", "accepted_and_cached", 1)
 	return contact, nil
 }
