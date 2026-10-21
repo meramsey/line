@@ -352,12 +352,14 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) (response [
 		lookupDiagnostic(ctx, "search", "complete", line.LookupErrorCategory(responseErr), len(response))
 	}()
 	var results []*bridgev2.ResolveIdentifierResponse
+	var exactErr, fallbackErr error
 
 	// Exact public ID and MID lookup is shared with start-chat. Only search
 	// falls back to non-unique display-name matches.
 	lowerQuery := strings.ToLower(strings.TrimSpace(query))
 	if lowerQuery != "" {
 		contact, err := lc.resolveContactIdentifier(ctx, query)
+		exactErr = err
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -380,7 +382,7 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) (response [
 		}
 		// Remote error text can contain profile data; log only its category.
 		lookupDiagnostic(ctx, "search", "contact_ids", line.LookupErrorCategory(err), 0)
-		return results, nil
+		return nil, fmt.Errorf("LINE contact search failed: %w", err)
 	}
 	lookupDiagnostic(ctx, "search", "contact_ids", "decoded", len(allMids))
 
@@ -391,18 +393,31 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) (response [
 			end = len(allMids)
 		}
 		batch := allMids[i:end]
+		requested := make(map[string]bool, len(batch))
+		for _, mid := range batch {
+			requested[strings.ToLower(mid)] = true
+		}
 		contactsResp, err := client.GetContactsV2Context(ctx, batch)
 		if err != nil {
 			lookupDiagnostic(ctx, "search", "contact_batch", line.LookupErrorCategory(err), 0)
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			continue
+			return nil, fmt.Errorf("LINE contact search failed: %w", err)
 		}
 		lookupDiagnostic(ctx, "search", "contact_batch", "decoded", len(contactsResp.Contacts))
-		for _, wrapper := range contactsResp.Contacts {
+		keyCounts := make(map[string]int, len(contactsResp.Contacts))
+		for key := range contactsResp.Contacts {
+			keyCounts[strings.ToLower(key)]++
+		}
+		for key, wrapper := range contactsResp.Contacts {
 			c := wrapper.Contact
-			if c.Mid == "" {
+			c.Mid = strings.ToLower(c.Mid)
+			// A display-name match is not authority to accept malformed, unsolicited
+			// or conflicting identities from a contact response.
+			if !isCanonicalUserMID(c.Mid) || strings.ToLower(key) != c.Mid || !requested[c.Mid] || keyCounts[c.Mid] != 1 {
+				lookupDiagnostic(ctx, "search", "contact_validation", "rejected", 0)
+				fallbackErr = fmt.Errorf("LINE contact search returned invalid or ambiguous user MIDs")
 				continue
 			}
 			name := strings.ToLower(c.EffectiveDisplayName())
@@ -415,6 +430,14 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) (response [
 		}
 	}
 
+	if len(results) == 0 {
+		if exactErr != nil {
+			return nil, fmt.Errorf("exact LINE lookup failed and no matching contacts were found: %w", exactErr)
+		}
+		if fallbackErr != nil {
+			return nil, fallbackErr
+		}
+	}
 	return results, nil
 }
 

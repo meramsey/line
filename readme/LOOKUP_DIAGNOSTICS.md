@@ -44,6 +44,11 @@ wrong endpoint, or unrelated user cannot be inferred from the error text.
   second public-ID discovery API. The previously deployed implementation discards
   exact errors and can return an empty result after this fallback. Thus an empty
   search is not proof of an empty or valid response to `findContactByUserid`.
+  The diagnostic build now returns the exact error when fallback finds no matches,
+  and reports contact-list/batch API errors instead of a misleading empty success.
+  Fallback contacts must have canonicalizable MIDs matching both the response key
+  and the requested batch, with no duplicate case-normalized keys. Malformed,
+  unsolicited and ambiguous entries are rejected before caching or ghost creation.
 * Public IDs always bypass cache. Validated exact contacts are cached by canonical
   MID, never by public ID. This prevents reassigned IDs using stale aliases.
 * Exact validation completes before ghost/portal creation. The framework creates
