@@ -8,7 +8,12 @@
 /matrix-line*
 /start
 
-/docs
+/docs/*
+!/docs/TEST_PERFORMANCE.md
+
+# Project-local build, profiling and test artifacts
+/.opencode-work/
+/scripts/__pycache__/
 
 /test
 
