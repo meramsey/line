@@ -45,8 +45,40 @@ first room creation tests actual creation rather than a recovered mock panic.
 
 The original diagnostic setting (absent/false) and log level (`debug`) were restored
 after evidence collection; the bridge reconnected with its saved LINE login.
-End-to-end verification of the fixed binary remains required. No successful live
-lookup/portal workflow is claimed solely from these probes or local tests.
+Live verification of `05a16077` subsequently confirmed successful resolve/search
+at 21:28 UTC (HTTP 200/code 0, `opaque_user_mid`, `accepted_and_cached`) and
+successful start-chat lookup at 21:29–21:30 UTC. A Matrix room was created at
+21:30:33. The operator confirmed search/resolve worked. Portal count remained
+three, with three mapped rooms, after the reported logout; recipient confirmation
+and unrelated-room assessment still require the operator's observations.
+
+### Subsequent session/QR failure
+
+At 21:30:51 a user message attempt returned wrapper code 10051, nested
+TalkException code 8, fixed reason `V3_TOKEN_CLIENT_LOGGED_OUT`. This establishes
+token invalidation, **not which device/client/action caused it**. The bridge's
+"another LINE client connected" notice is its own explanatory text, not evidence
+identifying another device. There was one running bridge process and no automatic
+service restart. The read-only identity probe had completed before the fixed
+binary deployment and never called authentication endpoints.
+
+At 21:36:47 the management-room `logout` command deleted the stored login with
+`logout_remote=true`; read-only database checks then found zero logins. Subsequent
+QR login was reported to fail at `qrCodeLoginV2`, HTTP 400, wrapper code 10051,
+displayed status 0. The existing QR decoder discarded the nested exception code
+and reason, and displayed zero when `data.statusCode` was absent. Those details
+cannot be recovered from the retained diagnostic records. Wrapper code 10051
+alone does not establish expiry, rate limiting or another specific rejection.
+
+QR errors now retain numeric nested exception codes, fixed exception-type labels
+and the existing allowlisted login reasons; arbitrary reasons become `redacted`.
+Absent numeric fields are omitted, not rendered as zero. This is a diagnostic
+repair, not a claimed fix for the unknown server rejection. Synthetic tests cover
+privacy, HTTP/API failures, absent/invalid fields and unchanged poll-expiry
+classification. One operator-driven retry after an approved diagnostic deployment
+is needed to establish the actual rejection. No credentials or QR captures should
+be shared. Lookup diagnostics were disabled again and original logging restored;
+the service is running, but has no saved LINE login following the logout command.
 
 ## Pre-capture investigation (historical)
 
