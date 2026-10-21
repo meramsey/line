@@ -95,14 +95,29 @@ func (c *Client) VerifyQRCertificate(ctx context.Context, session, certificate s
 }
 
 type qrRPCError struct {
-	method        string
-	httpStatus    int
-	code          *int
-	statusCode    *int
-	exceptionCode *int
-	exceptionType string
-	reason        string
-	alert         string
+	method         string
+	httpStatus     int
+	code           *int
+	statusCode     *int
+	exceptionCode  *int
+	exceptionType  string
+	exceptionLabel string
+	reason         string
+	alert          string
+}
+
+// secondaryQrCodeErrorLabels maps the fixed error codes of
+// SecondaryQrCodeException to their schema labels. The codes are only
+// interpreted for that exception class, since other classes reuse the numbers.
+var secondaryQrCodeErrorLabels = map[int]string{
+	0:   "INTERNAL_ERROR",
+	1:   "ILLEGAL_ARGUMENT",
+	2:   "VERIFICATION_FAILED",
+	3:   "NOT_ALLOWED_QR_CODE_LOGIN",
+	4:   "VERIFICATION_NOTICE_FAILED",
+	5:   "RETRY_LATER",
+	100: "INVALID_CONTEXT",
+	101: "APP_UPGRADE_REQUIRED",
 }
 
 func (e *qrRPCError) Error() string {
@@ -115,6 +130,9 @@ func (e *qrRPCError) Error() string {
 	}
 	if e.exceptionCode != nil {
 		message += fmt.Sprintf(", exception code %d", *e.exceptionCode)
+		if e.exceptionLabel != "" {
+			message += " (" + e.exceptionLabel + ")"
+		}
 	}
 	if e.exceptionType != "" {
 		message += ", exception type " + e.exceptionType
@@ -126,6 +144,43 @@ func (e *qrRPCError) Error() string {
 		message += ", alert " + e.alert
 	}
 	return message
+}
+
+// QRFailureDetail describes a rejected QR login request. Every field is a fixed
+// schema label or an allowlisted category, never raw provider text.
+type QRFailureDetail struct {
+	Method         string
+	HTTPStatus     int
+	ResponseCode   int
+	ExceptionType  string
+	ExceptionCode  int
+	ExceptionLabel string
+	Reason         string
+	Alert          string
+}
+
+// QRLoginFailureDetail extracts the sanitized details of a rejected QR login
+// request. It reports false for errors that did not come from a QR request.
+func QRLoginFailureDetail(err error) (QRFailureDetail, bool) {
+	var response *qrRPCError
+	if !errors.As(err, &response) {
+		return QRFailureDetail{}, false
+	}
+	detail := QRFailureDetail{
+		Method:         response.method,
+		HTTPStatus:     response.httpStatus,
+		ExceptionType:  response.exceptionType,
+		ExceptionLabel: response.exceptionLabel,
+		Reason:         response.reason,
+		Alert:          response.alert,
+	}
+	if response.code != nil {
+		detail.ResponseCode = *response.code
+	}
+	if response.exceptionCode != nil {
+		detail.ExceptionCode = *response.exceptionCode
+	}
+	return detail, true
 }
 
 func IsQRLoginPollExpired(err error) bool {
@@ -258,6 +313,9 @@ func (c *Client) callQRRPC(ctx context.Context, method, session string, pollTime
 			response.alert = safeLoginPollingReason(details.Alert)
 			if details.Alert != "" && response.alert == "" {
 				response.alert = "redacted"
+			}
+			if details.Name == "SecondaryQrCodeException" && details.Code != nil {
+				response.exceptionLabel = secondaryQrCodeErrorLabels[*details.Code]
 			}
 		}
 		return response

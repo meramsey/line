@@ -20,8 +20,12 @@ func TestQRErrorDetailsAndRedaction(t *testing.T) {
 		{"nested rejection", `{"code":10051,"message":"PRIVATE","data":{"name":"TalkException","code":35,"reason":"blocked user","accessToken":"PRIVATE","authSessionId":"PRIVATE"}}`, "exception code 35, exception type TalkException, reason blocked user", 400, false},
 		{"HTTP success API failure", `{"code":10051,"data":{"name":"SecondaryQrCodeLoginException","code":0,"reason":"PRIVATE"}}`, "exception code 0, exception type SecondaryQrCodeLoginException, reason redacted", 200, false},
 		{"unknown exception", `{"code":10051,"data":{"name":"PRIVATE","code":99,"reason":"PRIVATE"}}`, "exception code 99, exception type other, reason redacted", 400, false},
-		{"QR exception with private alert", `{"code":10051,"data":{"name":"SecondaryQrCodeException","code":100,"alertMessage":"PRIVATE"}}`, "exception code 100, exception type SecondaryQrCodeException, alert redacted", 400, false},
-		{"QR exception with allowlisted alert", `{"code":10051,"data":{"name":"SecondaryQrCodeException","code":5,"alertMessage":"Too many login attempts"}}`, "exception code 5, exception type SecondaryQrCodeException, alert Too many login attempts", 400, false},
+		{"QR exception with private alert", `{"code":10051,"data":{"name":"SecondaryQrCodeException","code":100,"alertMessage":"PRIVATE"}}`, "exception code 100 (INVALID_CONTEXT), exception type SecondaryQrCodeException, alert redacted", 400, false},
+		{"QR exception with allowlisted alert", `{"code":10051,"data":{"name":"SecondaryQrCodeException","code":5,"alertMessage":"Too many login attempts"}}`, "exception code 5 (RETRY_LATER), exception type SecondaryQrCodeException, alert Too many login attempts", 400, false},
+		{"QR exception with known code", `{"code":10051,"data":{"name":"SecondaryQrCodeException","code":100}}`, "exception code 100 (INVALID_CONTEXT), exception type SecondaryQrCodeException", 400, false},
+		{"QR exception with retry code", `{"code":10051,"data":{"name":"SecondaryQrCodeException","code":5}}`, "exception code 5 (RETRY_LATER), exception type SecondaryQrCodeException", 400, false},
+		{"QR exception with unknown code", `{"code":10051,"data":{"name":"SecondaryQrCodeException","code":999}}`, "exception code 999, exception type SecondaryQrCodeException", 400, false},
+		{"other exception keeps raw code", `{"code":10051,"data":{"name":"TalkException","code":100}}`, "exception code 100, exception type TalkException", 400, false},
 		{"poll expired", `{"code":10052,"data":{"statusCode":410}}`, "code 10052, status 410", 400, true},
 		{"missing detail", `{"code":10051,"data":{}}`, "QR qrCodeLoginV2 failed: HTTP 400, code 10051", 400, false},
 		{"malformed", `PRIVATE`, "QR qrCodeLoginV2 failed: HTTP 400", 400, false},
@@ -56,6 +60,30 @@ func TestQRErrorDetailsAndRedaction(t *testing.T) {
 			if client.AccessToken != "" {
 				t.Fatal("failed login installed token")
 			}
+			detail, ok := QRLoginFailureDetail(err)
+			if !ok {
+				t.Fatal("QR failure detail was not extracted")
+			}
+			if detail.Method != "qrCodeLoginV2" || detail.HTTPStatus != tc.status {
+				t.Fatalf("unexpected failure detail: %+v", detail)
+			}
+			if detail.ExceptionType == "other" && detail.ExceptionLabel != "" {
+				t.Fatal("unknown exception type was given a code label")
+			}
+			if detail.ExceptionType == "SecondaryQrCodeException" {
+				wantLabel := secondaryQrCodeErrorLabels[detail.ExceptionCode]
+				if detail.ExceptionLabel != wantLabel {
+					t.Fatalf("label=%q want=%q", detail.ExceptionLabel, wantLabel)
+				}
+			} else if detail.ExceptionLabel != "" {
+				t.Fatalf("label applied to %s", detail.ExceptionType)
+			}
 		})
+	}
+}
+
+func TestQRLoginFailureDetailIgnoresOtherErrors(t *testing.T) {
+	if _, ok := QRLoginFailureDetail(errors.New("not a QR error")); ok {
+		t.Fatal("unrelated error was reported as a QR failure")
 	}
 }

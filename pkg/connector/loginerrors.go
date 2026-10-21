@@ -31,6 +31,11 @@ var (
 		Err:        loginTooManyAttemptsReason,
 		StatusCode: http.StatusTooManyRequests,
 	}
+	ErrLoginRateLimited = bridgev2.RespError{
+		ErrCode:    "DEV.HIGHEST.LINE.RATE_LIMITED",
+		Err:        "LINE is limiting how often this account can sign in. Please try again later.",
+		StatusCode: http.StatusTooManyRequests,
+	}
 	ErrLoginRejected = bridgev2.RespError{
 		ErrCode:    "DEV.HIGHEST.LINE.LOGIN_REJECTED",
 		Err:        genericLoginFailureReason,
@@ -60,6 +65,8 @@ func wrapLineLoginError(err error) error {
 		mapped = ErrLoginVerificationFailed
 	case isBlockedUserLoginError(reason):
 		mapped = ErrLoginTooManyAttempts
+	case isLoginRateLimitText(reason):
+		mapped = ErrLoginTooManyAttempts
 	case details.HTTPStatus == http.StatusTooManyRequests:
 		mapped = ErrLoginTooManyAttempts
 	case details.HTTPStatus == http.StatusUnauthorized, details.HTTPStatus == http.StatusForbidden:
@@ -67,6 +74,50 @@ func wrapLineLoginError(err error) error {
 	case reason != "":
 		// LINE's own reason strings are short and user-facing, so quote them.
 		mapped = ErrLoginRejected.WithMessage("%s", reason)
+	}
+	return fmt.Errorf("%w: %w", mapped, err)
+}
+
+// qrLoginFailureMessage maps a rejected QR request to fixed user-facing copy.
+// The mobile app shows no detail for these rejections, so the bridge is the
+// only place the reason can be shown. Provider text is never quoted; only fixed
+// schema labels are used.
+func qrLoginFailureMessage(detail line.QRFailureDetail) string {
+	switch detail.ExceptionLabel {
+	case "NOT_ALLOWED_QR_CODE_LOGIN":
+		return "LINE doesn't allow QR sign-in for this account. Please sign in with your email and password instead."
+	case "INVALID_CONTEXT":
+		return "LINE rejected the QR sign-in because the sign-in context was no longer valid. Please start the sign-in again with a fresh QR code."
+	case "VERIFICATION_FAILED":
+		return "LINE didn't confirm the QR sign-in. Please scan the QR code again and try once more."
+	case "VERIFICATION_NOTICE_FAILED":
+		return "LINE didn't confirm the QR sign-in request. Please try again."
+	case "APP_UPGRADE_REQUIRED":
+		return "LINE requires a newer version of the app. Please update the LINE app and try again."
+	case "ILLEGAL_ARGUMENT":
+		return "LINE rejected the QR sign-in request. Please start the sign-in again."
+	}
+	return "LINE rejected the QR sign-in. Please try again."
+}
+
+// wrapQRRPCError translates a rejected QR request into a user-facing error.
+// The original error stays in the chain with %w so logs are unaffected.
+func wrapQRRPCError(err error) error {
+	if err == nil {
+		return nil
+	}
+	detail, ok := line.QRLoginFailureDetail(err)
+	if !ok {
+		return err
+	}
+	var mapped bridgev2.RespError
+	switch classifyLoginRateLimit(err) {
+	case loginRateLimitLocked:
+		mapped = ErrLoginTooManyAttempts
+	case loginRateLimitRetryLater:
+		mapped = ErrLoginRateLimited.WithMessage("%s", loginRetryLaterMessage)
+	default:
+		mapped = ErrLoginRejected.WithMessage("%s", qrLoginFailureMessage(detail))
 	}
 	return fmt.Errorf("%w: %w", mapped, err)
 }

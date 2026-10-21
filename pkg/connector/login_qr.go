@@ -53,6 +53,9 @@ func (lq *LineQRLogin) start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := lq.login.loginCooldownError(); err != nil {
+		return nil, err
+	}
 	ll := lq.login
 	ll.mu.Lock()
 	if ll.canceled || ll.attemptCtx != nil {
@@ -138,7 +141,9 @@ func (lq *LineQRLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
 			if line.IsQRLoginPollExpired(err) {
 				return nil, fmt.Errorf("%w: %w", ErrLoginVerificationFailed, err)
 			}
-			return nil, err
+			lq.login.noteLoginRateLimit(err)
+			lq.login.logQRFailure(err, "qr_poll")
+			return nil, wrapQRRPCError(err)
 		}
 	case <-lq.login.attemptCtx.Done():
 		lq.Cancel()
@@ -151,7 +156,9 @@ func (lq *LineQRLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
 		verified, err := lq.client.VerifyQRCertificate(ctx, lq.session, lq.login.Certificate)
 		if err != nil {
 			lq.Cancel()
-			return nil, err
+			lq.login.noteLoginRateLimit(err)
+			lq.login.logQRFailure(err, "qr_certificate")
+			return nil, wrapQRRPCError(err)
 		}
 		if verified {
 			return lq.finish(ctx)
@@ -159,7 +166,9 @@ func (lq *LineQRLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
 		pin, err := lq.client.CreatePinCode(ctx, lq.session)
 		if err != nil {
 			lq.Cancel()
-			return nil, err
+			lq.login.noteLoginRateLimit(err)
+			lq.login.logQRFailure(err, "qr_pin")
+			return nil, wrapQRRPCError(err)
 		}
 		lq.pin = true
 		lq.startPoll(lq.client.CheckPinCodeVerifiedContext, false)
@@ -176,7 +185,9 @@ func (lq *LineQRLogin) finish(ctx context.Context) (*bridgev2.LoginStep, error) 
 	defer lq.Cancel()
 	res, err := lq.client.QRCodeLoginV2(ctx, lq.session)
 	if err != nil {
-		return nil, err
+		lq.login.noteLoginRateLimit(err)
+		lq.login.logQRFailure(err, "qr_token_issue")
+		return nil, wrapQRRPCError(err)
 	}
 	return lq.login.finishLogin(ctx, res)
 }
