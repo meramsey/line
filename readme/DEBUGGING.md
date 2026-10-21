@@ -1,5 +1,14 @@
 # Direct chats, synchronization, outbound messages and QR login
 
+## Choosing a login method
+
+Use `login` or `login help` in the bot management room to see available methods
+and examples. `login email` starts email/password login; `login qr` starts QR
+login when `network.qr_login` is enabled. Method names are case-insensitive.
+Outside that room, include the configured prefix, for example `!line login email`.
+The existing fully qualified flow IDs (`dev.highest.matrix.line.email_login` and
+`dev.highest.matrix.line.qr_login`) remain supported by commands and provisioning.
+
 ## Starting a direct chat
 
 In the bot management room:
