@@ -32,6 +32,11 @@ class CoverageGateTests(unittest.TestCase):
     def test_generated_gains_cannot_mask_handwritten_loss(self):
         self.assertTrue(compare({"pkg": [100, 100, 4, 10]}, {"pkg": [50, 100, 5, 10]}))
 
+    def test_new_uncovered_package_cannot_dilute_total_coverage(self):
+        baseline = {"pkg": [5, 10, 5, 10]}
+        current = {**baseline, "new/pkg": [0, 100, 0, 100]}
+        self.assertTrue(compare(current, baseline))
+
     def test_invalid_profiles_fail_closed(self):
         for content in ("", "mode: atomic\n", "mode: unknown\n", "mode: atomic\nx/a.go:1.1,2.2 -1 1\n", "mode: atomic\nx/a.go:1.1,2.2 1 1\nx/a.go:1.1,2.2 1 1\n"):
             with self.subTest(content=content), self.assertRaises(ValueError):

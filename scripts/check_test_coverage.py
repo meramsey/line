@@ -35,8 +35,12 @@ def read_profile(path):
 
 def compare(current, baseline):
     errors = []
-    for package, expected in baseline.items():
-        actual = current.get(package)
+    checks = [(package, current.get(package), expected) for package, expected in baseline.items()]
+    # New packages must not dilute aggregate coverage while every older package
+    # still meets its own floor. Keep generated and handwritten scopes separate.
+    checks.append(("all packages", [sum(row[i] for row in current.values()) for i in range(4)],
+                   [sum(row[i] for row in baseline.values()) for i in range(4)]))
+    for package, actual, expected in checks:
         if actual is None:
             errors.append(f"missing package: {package}")
             continue

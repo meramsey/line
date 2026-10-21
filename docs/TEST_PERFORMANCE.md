@@ -258,8 +258,11 @@ protection settings were not changed by this work.
   exception; race testing excludes no package.
 * `.github/coverage-baseline.tsv` records the measured package floors. Missing
   packages, fewer covered statements, or lower covered fractions fail, both for
-  all code and non-generated code. Intentional floor changes require review;
-  there is no automatic lowering. Seven Python tests exercise pass/fail behavior.
+  all code and non-generated code. Aggregate floors also prevent new uncovered
+  packages from diluting coverage while older packages still pass. Intentional
+  floor changes require review; there is no automatic lowering. Eight Python
+  tests exercise pass/fail behavior; the eighth specifically checks new-package
+  dilution and was validated after the release script run.
 * Module and compiled-test caches are separate. Compiled cache keys include Go
   version, native ABI, instrumentation mode, module versions and source/data
   hashes; bump the cache schema if instrumentation flags change. Lint binaries
