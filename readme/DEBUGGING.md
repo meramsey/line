@@ -27,7 +27,10 @@ room, use the configured command prefix (default `!line`), for example
 Public LINE IDs use the existing `TalkService.findContactByUserid` RPC. The
 bridge validates the returned user MID before creating a ghost or portal. User
 MIDs are `u` followed by 32 hexadecimal digits; surrounding whitespace and input
-case are normalized. A direct MID uses cached contact data or `getContactsV2`,
+case are normalized. Returned MIDs and contact-map keys also accept uppercase
+prefixes/hex digits and are canonicalized to lowercase before identity checks.
+Malformed MIDs and direct-MID responses identifying another user are rejected.
+A direct MID uses cached contact data or `getContactsV2`,
 with the existing BuddyService fallback for official accounts. The bridge never
 chooses a recipient by display name. `search` can still return display-name
 matches when there is no exact ID match, but `start-chat` cannot use that fallback.

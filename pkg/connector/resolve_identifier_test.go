@@ -163,7 +163,7 @@ func TestResolveIdentifierPublicMIDAndSearch(t *testing.T) {
 		if err := json.NewDecoder(req.Body).Decode(&args); err != nil || len(args) != 1 || args[0] != "carol.id" {
 			t.Fatalf("public ID arguments = %v, %v", args, err)
 		}
-		return resolutionResponse(`{"code":0,"data":{"mid":"` + resolutionMID + `","displayName":"Carol"}}`), nil
+		return resolutionResponse(`{"code":0,"data":{"mid":"` + strings.ToUpper(resolutionMID) + `","displayName":"Carol"}}`), nil
 	})
 	ctx := context.Background()
 	searched, err := lc.SearchUsers(ctx, " CAROL.ID ")
@@ -205,6 +205,73 @@ func TestResolveIdentifierMIDLookup(t *testing.T) {
 	result, err := lc.ResolveIdentifier(context.Background(), strings.ToUpper(resolutionMID), true)
 	if err != nil || result == nil || result.Chat.PortalKey.ID != resolutionMID {
 		t.Fatalf("MID lookup = %+v, %v", result, err)
+	}
+}
+
+// Synthetic fixtures use the existing TalkService envelope and the uppercase
+// MID representation also supported by sync and Letter Sealing. They are not
+// captured responses from the reported failing account.
+func TestResolveIdentifierMIDRepresentations(t *testing.T) {
+	for _, tc := range []struct {
+		name, query, key, mid string
+		wantErr               bool
+	}{
+		{"public uppercase prefix", "carol.id", "", "U" + resolutionMID[1:], false},
+		{"public uppercase hex", "carol.id", "", strings.ToUpper(resolutionMID), false},
+		{"MID uppercase body", resolutionMID, resolutionMID, strings.ToUpper(resolutionMID), false},
+		{"MID uppercase key", resolutionMID, strings.ToUpper(resolutionMID), resolutionMID, false},
+		{"MID both uppercase", strings.ToUpper(resolutionMID), strings.ToUpper(resolutionMID), strings.ToUpper(resolutionMID), false},
+		{"MID wrong body", resolutionMID, strings.ToUpper(resolutionMID), strings.ToUpper(resolutionOwnMID), true},
+		{"non hex", "carol.id", "", "U0123456789abcdef0123456789abcdeg", true},
+		{"short", "carol.id", "", "U0123456789abcdef", true},
+		{"response whitespace", "carol.id", "", " " + resolutionMID, true},
+		{"response control", "carol.id", "", resolutionMID + "\n", true},
+		{"wrong type", "carol.id", "", "C" + resolutionMID[1:], true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			lc := newResolutionClient(t, func(req *http.Request) (*http.Response, error) {
+				calls++
+				var data any = line.Contact{Mid: tc.mid, DisplayName: "Carol"}
+				endpoint := "/findContactByUserid"
+				if tc.key != "" {
+					endpoint = "/getContactsV2"
+					data = line.ContactsResponse{Contacts: map[string]line.ContactWrapper{tc.key: {Contact: data.(line.Contact)}}}
+				}
+				if !strings.HasSuffix(req.URL.Path, endpoint) {
+					t.Fatalf("unexpected fallback or bulk RPC: %s", req.URL.Path)
+				}
+				body, err := json.Marshal(map[string]any{"code": 0, "data": data})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return resolutionResponse(string(body)), nil
+			})
+			result, err := lc.ResolveIdentifier(context.Background(), tc.query, true)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+			if tc.wantErr {
+				if result != nil {
+					t.Fatal("invalid result returned")
+				}
+				if _, ok := lc.contactCache[resolutionMID]; ok {
+					t.Fatal("invalid result cached")
+				}
+			} else {
+				if result == nil || result.UserID != resolutionMID || result.Chat.PortalKey.ID != resolutionMID {
+					t.Fatalf("noncanonical result: %+v", result)
+				}
+				cached, err := lc.ResolveIdentifier(context.Background(), resolutionMID, true)
+				if err != nil || cached.Chat.PortalKey != result.Chat.PortalKey {
+					t.Fatalf("cache identity differs: %+v %v", cached, err)
+				}
+			}
+			if calls != 1 {
+				t.Fatalf("lookup made %d calls", calls)
+			}
+			assertPortalCount(t, lc, 0)
+		})
 	}
 }
 
@@ -287,7 +354,7 @@ func TestResolveIdentifierConcurrentCanonicalPortalReuse(t *testing.T) {
 		if !strings.HasSuffix(req.URL.Path, "/findContactByUserid") {
 			return nil, fmt.Errorf("unexpected RPC: %s", req.URL.Path)
 		}
-		return resolutionResponse(`{"code":0,"data":{"mid":"` + resolutionMID + `","displayName":"Carol"}}`), nil
+		return resolutionResponse(`{"code":0,"data":{"mid":"` + strings.ToUpper(resolutionMID) + `","displayName":"Carol"}}`), nil
 	})
 	ctx := context.Background()
 	const count = 12
@@ -347,7 +414,7 @@ func TestStartChatCreatesReusesAndRetriesRoom(t *testing.T) {
 		if !strings.HasSuffix(req.URL.Path, "/findContactByUserid") {
 			return nil, fmt.Errorf("unexpected RPC: %s", req.URL.Path)
 		}
-		return resolutionResponse(`{"code":0,"data":{"mid":"` + resolutionMID + `","displayName":"Carol"}}`), nil
+		return resolutionResponse(`{"code":0,"data":{"mid":"` + strings.ToUpper(resolutionMID) + `","displayName":"Carol"}}`), nil
 	})
 	matrix := lc.UserLogin.Bridge.Matrix.(*resolutionMatrix)
 	ctx := context.Background()
@@ -386,4 +453,39 @@ func TestStartChatCreatesReusesAndRetriesRoom(t *testing.T) {
 		t.Fatalf("create/delete counts = %d/%d", matrix.created, matrix.deleted)
 	}
 	assertPortalCount(t, lc, 1)
+}
+
+func TestResolveIdentifierAmbiguousMIDKeys(t *testing.T) {
+	lc := newResolutionClient(t, func(req *http.Request) (*http.Response, error) {
+		if !strings.HasSuffix(req.URL.Path, "/getContactsV2") {
+			t.Fatalf("unexpected RPC: %s", req.URL.Path)
+		}
+		return resolutionResponse(`{"code":0,"data":{"contacts":{"` + resolutionMID + `":{"contact":{"mid":"` + resolutionMID + `"}},"` + strings.ToUpper(resolutionMID) + `":{"contact":{"mid":"` + resolutionOwnMID + `"}}}}}`), nil
+	})
+	result, err := lc.ResolveIdentifier(context.Background(), resolutionMID, true)
+	if result != nil || err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertPortalCount(t, lc, 0)
+}
+
+func TestResolveIdentifierBuddyMIDRepresentation(t *testing.T) {
+	calls := 0
+	lc := newResolutionClient(t, func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/getContactsV2"):
+			return resolutionResponse(`{"code":0,"data":{"contacts":{}}}`), nil
+		case strings.HasSuffix(req.URL.Path, "/getBuddyProfile"):
+			return resolutionResponse(`{"code":0,"data":{"buddyMid":"` + strings.ToUpper(resolutionMID) + `","displayName":"Official"}}`), nil
+		default:
+			t.Fatalf("unexpected RPC: %s", req.URL.Path)
+			return nil, nil
+		}
+	})
+	result, err := lc.ResolveIdentifier(context.Background(), resolutionMID, true)
+	if err != nil || result == nil || result.UserID != resolutionMID || calls != 2 {
+		t.Fatalf("result=%+v err=%v calls=%d", result, err, calls)
+	}
+	assertPortalCount(t, lc, 0)
 }

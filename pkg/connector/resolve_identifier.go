@@ -56,8 +56,13 @@ func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier s
 			})
 			err = lookupErr
 			if contacts != nil {
-				if wrapper, found := contacts.Contacts[identifier]; found {
-					contact = &wrapper.Contact
+				for key, wrapper := range contacts.Contacts {
+					if strings.ToLower(key) == identifier {
+						if contact != nil {
+							return nil, fmt.Errorf("LINE lookup returned ambiguous user MID entries")
+						}
+						contact = &wrapper.Contact
+					}
 				}
 			}
 			if err == nil && contact == nil {
@@ -84,6 +89,10 @@ func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier s
 	if contact == nil || contact.Mid == "" {
 		return nil, nil
 	}
+	// LINE also uses uppercase MID prefixes/hex digits. Normalize the response
+	// just as we normalize MID input, before validating identity or caching it.
+	// Do not trim response whitespace or accept anything beyond a user MID.
+	contact.Mid = strings.ToLower(contact.Mid)
 	if !isCanonicalUserMID(contact.Mid) || isCanonicalUserMID(identifier) && contact.Mid != identifier {
 		return nil, fmt.Errorf("LINE lookup returned an invalid or mismatched user MID")
 	}
