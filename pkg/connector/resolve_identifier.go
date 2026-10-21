@@ -11,15 +11,13 @@ import (
 )
 
 func isCanonicalUserMID(identifier string) bool {
-	if len(identifier) != 33 || identifier[0] != 'u' {
-		return false
-	}
-	for _, ch := range identifier[1:] {
-		if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f') {
-			return false
-		}
-	}
-	return true
+	normalized, valid := line.NormalizeUserMID(identifier)
+	return valid && normalized == identifier
+}
+
+func normalizeUserMID(identifier string) string {
+	normalized, _ := line.NormalizeUserMID(identifier)
+	return normalized
 }
 
 // resolveContactIdentifier never matches display names or creates portals.
@@ -36,7 +34,12 @@ func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier s
 	if err := lc.checkLineCall(ctx); err != nil {
 		return nil, err
 	}
-	identifier = strings.ToLower(strings.TrimSpace(identifier))
+	identifier = strings.TrimSpace(identifier)
+	if normalized, valid := line.NormalizeUserMID(identifier); valid {
+		identifier = normalized
+	} else {
+		identifier = strings.ToLower(identifier)
+	}
 	if identifier == "" || strings.ContainsFunc(identifier, unicode.IsSpace) || strings.ContainsFunc(identifier, unicode.IsControl) {
 		return nil, fmt.Errorf("provide a LINE public ID or user MID, not a display name")
 	}
@@ -67,7 +70,7 @@ func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier s
 			if contacts != nil {
 				lookupDiagnostic(ctx, "exact", "contacts", "decoded", len(contacts.Contacts))
 				for key, wrapper := range contacts.Contacts {
-					if strings.ToLower(key) == identifier {
+					if normalizeUserMID(key) == identifier {
 						if contact != nil {
 							lookupDiagnostic(ctx, "exact", "validation", "ambiguous_keys", 0)
 							return nil, fmt.Errorf("LINE lookup returned ambiguous user MID entries")
@@ -103,11 +106,9 @@ func (lc *LineClient) resolveContactIdentifier(ctx context.Context, identifier s
 		lookupDiagnostic(ctx, "exact", "validation", "missing_mid_or_contact", 0)
 		return nil, nil
 	}
-	// LINE also uses uppercase MID prefixes/hex digits. Normalize the response
-	// just as we normalize MID input, before validating identity or caching it.
-	// Do not trim response whitespace or accept anything beyond a user MID.
+	// Normalize legacy hex only; opaque gateway IDs must remain byte-identical.
 	lookupDiagnostic(ctx, "exact", "mid_shape", line.UserMIDState(contact.Mid), 0)
-	contact.Mid = strings.ToLower(contact.Mid)
+	contact.Mid = normalizeUserMID(contact.Mid)
 	if !isCanonicalUserMID(contact.Mid) || isCanonicalUserMID(identifier) && contact.Mid != identifier {
 		outcome := "invalid_mid_shape"
 		if isCanonicalUserMID(contact.Mid) {

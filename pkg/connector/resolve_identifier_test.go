@@ -44,6 +44,9 @@ type resolutionMatrix struct {
 }
 
 func (*resolutionMatrix) Init(*bridgev2.Bridge) {}
+func (*resolutionMatrix) NewUserIntent(context.Context, id.UserID, string) (bridgev2.MatrixAPI, string, error) {
+	return nil, "", errors.New("double puppeting disabled in test")
+}
 func (m *resolutionMatrix) BotIntent() bridgev2.MatrixAPI {
 	return &resolutionIntent{mxid: "@bot:example.com", matrix: m}
 }

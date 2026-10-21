@@ -67,6 +67,15 @@ func UserMIDState(mid string) string {
 	if mid == "" {
 		return "empty"
 	}
+	if len(mid) == 44 {
+		if _, valid := NormalizeUserMID(mid); valid {
+			return "opaque_user_mid"
+		}
+		if mid[0] != 'U' {
+			return "invalid_prefix"
+		}
+		return "invalid_alphabet"
+	}
 	if len(mid) != 33 {
 		return "invalid_length"
 	}

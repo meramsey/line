@@ -1,6 +1,54 @@
 # Public-ID lookup diagnostics
 
-## What is established
+## Live finding — October 21, 2026
+
+The diagnostic build `160ac20` reproduced the failure against the Chrome gateway
+using the existing LINE login. Sanitized observations (no response bodies retained
+here):
+
+* `resolve-identifier`, 20:58:49 UTC, trace `dbcif2fdiv38efc9f480`:
+  `TalkService.findContactByUserid`, HTTP 200, API code 0. Envelope fields were
+  `code`, `data`, `message`; `data` was a 17-field contact object including `mid`,
+  `displayName`, `picturePath`, `statusMessage`. `data.mid` was a 44-byte string.
+* `search`, 20:59:10 UTC, trace `dbcif7ndiv38efc9f48g`: identical exact-response
+  shape/status. Both bypassed cache and rejected `invalid_length` /
+  `invalid_mid_shape`. Search then fetched three IDs and three contact wrappers
+  successfully (HTTP 200, API code 0), but rejected all contact identities.
+* Read-only database shape checks found the saved login and three portal IDs also
+  had length 44, uppercase `U` prefixes and URL-safe ASCII alphabets.
+* A read-only protocol probe repeated `findContactByUserid`, then passed its
+  returned MID **unchanged** to `getContactsV2`. Both returned HTTP 200/code 0.
+  The second response contained exactly one entry, with a byte-identical map key
+  and `contact.mid`, and equal display name. The public lookup MID also exactly
+  matched an existing portal ID. Only shape/equality booleans were exported;
+  credentials were piped locally on the server, never printed or stored by the
+  probe. No contacts were changed or messages sent.
+
+This verifies that the legacy-only `u` + 32 hex rule rejects an identity actually
+used by this gateway. It is not a decoder-nesting, API-permission or stale-cache
+failure. Blind lowercasing would additionally alter opaque identity bytes.
+
+The repair accepts the observed `U` + 43 URL-safe ASCII characters as an opaque,
+case-sensitive user ID. It preserves legacy hexadecimal normalization, but never
+lowercases or decodes opaque IDs. Requested-ID equality, contact-map key equality,
+requested-batch membership and legacy-normalized duplicate checks remain enforced.
+This is the observed supported shape, not a claim about every possible LINE ID
+format or an undocumented encryption/encoding algorithm. Diagnostics classify it
+as `opaque_user_mid`; invalid 44-byte values report prefix/alphabet failures.
+
+Regression fixtures replace all identity/profile values with invented ones. A
+44-byte fixture reproduced the exact error on baseline `160ac20` in an isolated
+worktree. Tests cover public lookup, direct opaque-ID requests, cache reuse, portal
+reuse, fallback matching and case-only recipient mismatches, alongside the legacy
+regressions. The Matrix test double explicitly disables double puppeting so the
+first room creation tests actual creation rather than a recovered mock panic.
+
+The original diagnostic setting (absent/false) and log level (`debug`) were restored
+after evidence collection; the bridge reconnected with its saved LINE login.
+End-to-end verification of the fixed binary remains required. No successful live
+lookup/portal workflow is claimed solely from these probes or local tests.
+
+## Pre-capture investigation (historical)
 
 QR login is confirmed working by the operator. The latest live report says
 `start-chat ripharambe201669` returns `LINE lookup returned an invalid or

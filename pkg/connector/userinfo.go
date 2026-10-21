@@ -395,7 +395,7 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) (response [
 		batch := allMids[i:end]
 		requested := make(map[string]bool, len(batch))
 		for _, mid := range batch {
-			requested[strings.ToLower(mid)] = true
+			requested[normalizeUserMID(mid)] = true
 		}
 		contactsResp, err := client.GetContactsV2Context(ctx, batch)
 		if err != nil {
@@ -408,14 +408,14 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) (response [
 		lookupDiagnostic(ctx, "search", "contact_batch", "decoded", len(contactsResp.Contacts))
 		keyCounts := make(map[string]int, len(contactsResp.Contacts))
 		for key := range contactsResp.Contacts {
-			keyCounts[strings.ToLower(key)]++
+			keyCounts[normalizeUserMID(key)]++
 		}
 		for key, wrapper := range contactsResp.Contacts {
 			c := wrapper.Contact
-			c.Mid = strings.ToLower(c.Mid)
+			c.Mid = normalizeUserMID(c.Mid)
 			// A display-name match is not authority to accept malformed, unsolicited
 			// or conflicting identities from a contact response.
-			if !isCanonicalUserMID(c.Mid) || strings.ToLower(key) != c.Mid || !requested[c.Mid] || keyCounts[c.Mid] != 1 {
+			if !isCanonicalUserMID(c.Mid) || normalizeUserMID(key) != c.Mid || !requested[c.Mid] || keyCounts[c.Mid] != 1 {
 				lookupDiagnostic(ctx, "search", "contact_validation", "rejected", 0)
 				fallbackErr = fmt.Errorf("LINE contact search returned invalid or ambiguous user MIDs")
 				continue

@@ -21,6 +21,7 @@ func TestLookupDiagnosticShapes(t *testing.T) {
 		{"null", `{"data":null}`, "$.data", "null", "", 0},
 		{"nested contact", `{"data":{"contact":{"mid":"u0123456789abcdef0123456789abcdef"}}}`, "$.data.contact.mid", "string", "canonical", 33},
 		{"nested result", `{"data":{"result":{"userMid":"U0123456789ABCDEF0123456789ABCDEF"}}}`, "$.data.result.userMid", "string", "valid_case_variant", 33},
+		{"opaque", `{"code":0,"data":{"mid":"UAbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-aDEFg"}}`, "$.data.mid", "string", "opaque_user_mid", 44},
 		{"buddy", `{"data":{"buddyMid":"redacted-probe"}}`, "$.data.buddyMid", "string", "invalid_length", 14},
 		{"number", `{"data":{"mid":123}}`, "$.data.mid", "number", "", 0},
 		{"bool", `{"data":{"mid":false}}`, "$.data.mid", "bool", "", 0},
@@ -47,7 +48,7 @@ func TestLookupDiagnosticShapes(t *testing.T) {
 				t.Fatalf("missing %s: %+v", tc.path, shape)
 			}
 			encoded, _ := json.Marshal(shape)
-			for _, private := range []string{"PRIVATE-ID", "PRIVATE-NAME", "0123456789", "redacted-probe"} {
+			for _, private := range []string{"PRIVATE-ID", "PRIVATE-NAME", "0123456789", "redacted-probe", "AbCdEfGh"} {
 				if strings.Contains(string(encoded), private) {
 					t.Fatalf("private value leaked: %s", encoded)
 				}

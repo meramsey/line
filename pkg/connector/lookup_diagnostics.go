@@ -18,7 +18,7 @@ func (lc *LineClient) lookupDiagnosticContext(ctx context.Context, source, ident
 		return ctx
 	}
 	category := "public_id_or_name"
-	if isCanonicalUserMID(strings.ToLower(strings.TrimSpace(identifier))) {
+	if isCanonicalUserMID(normalizeUserMID(strings.TrimSpace(identifier))) {
 		category = "user_mid"
 	}
 	// A fresh request ID correlates stages without logging or hashing the user's
