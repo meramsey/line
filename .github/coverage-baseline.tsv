@@ -1,0 +1,12 @@
+# Statement coverage measured at 587164f7ced99bc5765ac7df4eafc11314e6d602.
+# Go 1.26.10, CGO_ENABLED=1, go test -covermode=atomic -count=1 ./...
+# package covered total non_generated_covered non_generated_total
+github.com/beeper/line/cmd/matrix-line	0	3	0	3
+github.com/beeper/line/pkg	235	736	235	736
+github.com/beeper/line/pkg/connector	1528	4409	1528	4409
+github.com/beeper/line/pkg/connector/handlers	368	985	368	985
+github.com/beeper/line/pkg/e2ee	218	596	218	596
+github.com/beeper/line/pkg/line	395	1479	395	1479
+github.com/beeper/line/pkg/line/password	0	26	0	26
+github.com/beeper/line/pkg/line/secret	0	7	0	7
+github.com/beeper/line/pkg/ltsm	171289	404716	544	1061

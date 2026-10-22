@@ -193,6 +193,10 @@ func (lc *LineClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) 
 	}
 
 	contact := lc.getContact(ctx, string(portal.ID))
+	return lc.directChatInfo(mid, contact), nil
+}
+
+func (lc *LineClient) directChatInfo(mid string, contact line.Contact) *bridgev2.ChatInfo {
 	dmType := database.RoomTypeDM
 	chatName := contact.EffectiveDisplayName()
 	return &bridgev2.ChatInfo{
@@ -213,14 +217,14 @@ func (lc *LineClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) 
 				},
 				{
 					EventSender: bridgev2.EventSender{
-						Sender: networkid.UserID(portal.ID),
+						Sender: networkid.UserID(mid),
 					},
 					Membership: event.MembershipJoin,
 					PowerLevel: ptr.Ptr(0),
 				},
 			}),
 		},
-	}, nil
+	}
 }
 
 func (lc *LineClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
@@ -294,24 +298,35 @@ func (lc *LineClient) setCachedContact(mid string, contact line.Contact) {
 }
 
 func (lc *LineClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
-	userID := makeUserID(strings.TrimSpace(identifier))
-	portalID := networkid.PortalKey{ID: makePortalID(string(userID)), Receiver: lc.UserLogin.ID}
+	source := "resolve_identifier"
+	if createChat {
+		source = "start_chat"
+	}
+	ctx = lc.lookupDiagnosticContext(ctx, source, identifier)
+	contact, err := lc.resolveContactIdentifier(ctx, identifier)
+	if err != nil || contact == nil {
+		return nil, err
+	}
+	userID := makeUserID(contact.Mid)
 	ghost, err := lc.UserLogin.Bridge.GetGhostByID(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ghost: %w", err)
 	}
-	portal, err := lc.UserLogin.Bridge.GetPortalByKey(ctx, portalID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get portal: %w", err)
-	}
-	ghostInfo, _ := lc.GetUserInfo(ctx, ghost)
-	portalInfo, _ := lc.GetChatInfo(ctx, portal)
-	return &bridgev2.ResolveIdentifierResponse{
+	name := contact.EffectiveDisplayName()
+	resp := &bridgev2.ResolveIdentifierResponse{
 		Ghost:    ghost,
 		UserID:   userID,
-		UserInfo: ghostInfo,
-		Chat:     &bridgev2.CreateChatResponse{Portal: portal, PortalKey: portalID, PortalInfo: portalInfo},
-	}, nil
+		UserInfo: &bridgev2.UserInfo{Identifiers: []string{contact.Mid}, Name: &name, Avatar: lc.avatarFromPicturePath(contact.PicturePath)},
+	}
+	if createChat {
+		// Resolve and validate before bridgev2 persists anything. Its canonical
+		// portal cache and room-creation event loop handle reuse and concurrency.
+		resp.Chat = &bridgev2.CreateChatResponse{
+			PortalKey:  networkid.PortalKey{ID: makePortalID(contact.Mid), Receiver: lc.UserLogin.ID},
+			PortalInfo: lc.directChatInfo(contact.Mid, *contact),
+		}
+	}
+	return resp, nil
 }
 
 func (lc *LineClient) midToResolveIdentifier(ctx context.Context, mid string) *bridgev2.ResolveIdentifierResponse {
@@ -331,33 +346,45 @@ func (lc *LineClient) midToResolveIdentifier(ctx context.Context, mid string) *b
 	}
 }
 
-func (lc *LineClient) SearchUsers(ctx context.Context, query string) ([]*bridgev2.ResolveIdentifierResponse, error) {
+func (lc *LineClient) SearchUsers(ctx context.Context, query string) (response []*bridgev2.ResolveIdentifierResponse, responseErr error) {
+	ctx = lc.lookupDiagnosticContext(ctx, "search", query)
+	defer func() {
+		lookupDiagnostic(ctx, "search", "complete", line.LookupErrorCategory(responseErr), len(response))
+	}()
 	var results []*bridgev2.ResolveIdentifierResponse
+	var exactErr, fallbackErr error
 
-	// Try by LINE user ID first
+	// Exact public ID and MID lookup is shared with start-chat. Only search
+	// falls back to non-unique display-name matches.
 	lowerQuery := strings.ToLower(strings.TrimSpace(query))
 	if lowerQuery != "" {
-		_, contact, err := callLineResult(lc, ctx, func(client *line.Client) (*line.Contact, error) {
-			return client.FindContactByUserid(lowerQuery)
-		})
-		if err == nil && contact != nil && contact.Mid != "" {
+		contact, err := lc.resolveContactIdentifier(ctx, query)
+		exactErr = err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if err == nil && contact != nil {
 			if r := lc.midToResolveIdentifier(ctx, contact.Mid); r != nil {
-				results = append(results, r)
-				if len(results) >= 20 {
-					return results, nil
-				}
+				return []*bridgev2.ResolveIdentifierResponse{r}, nil
 			}
 		}
+		lookupDiagnostic(ctx, "search", "exact_not_returned", line.LookupErrorCategory(err), 0)
 	}
 
 	// Search contacts by display name
+	lookupDiagnostic(ctx, "search", "fallback", "display_name_attempted", 0)
 	client, allMids, err := callLineResult(lc, ctx, func(client *line.Client) ([]string, error) {
-		return client.GetAllContactIds()
+		return client.GetAllContactIdsContext(ctx)
 	})
 	if err != nil {
-		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to get all contact IDs for search")
-		return results, nil
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		// Remote error text can contain profile data; log only its category.
+		lookupDiagnostic(ctx, "search", "contact_ids", line.LookupErrorCategory(err), 0)
+		return nil, fmt.Errorf("LINE contact search failed: %w", err)
 	}
+	lookupDiagnostic(ctx, "search", "contact_ids", "decoded", len(allMids))
 
 	// Fetch contacts in batches to check display names
 	for i := 0; i < len(allMids); i += 50 {
@@ -366,17 +393,36 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) ([]*bridgev
 			end = len(allMids)
 		}
 		batch := allMids[i:end]
-		contactsResp, err := client.GetContactsV2(batch)
-		if err != nil {
-			continue
+		requested := make(map[string]bool, len(batch))
+		for _, mid := range batch {
+			requested[normalizeUserMID(mid)] = true
 		}
-		for _, wrapper := range contactsResp.Contacts {
+		contactsResp, err := client.GetContactsV2Context(ctx, batch)
+		if err != nil {
+			lookupDiagnostic(ctx, "search", "contact_batch", line.LookupErrorCategory(err), 0)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("LINE contact search failed: %w", err)
+		}
+		lookupDiagnostic(ctx, "search", "contact_batch", "decoded", len(contactsResp.Contacts))
+		keyCounts := make(map[string]int, len(contactsResp.Contacts))
+		for key := range contactsResp.Contacts {
+			keyCounts[normalizeUserMID(key)]++
+		}
+		for key, wrapper := range contactsResp.Contacts {
 			c := wrapper.Contact
-			if c.Mid == "" {
+			c.Mid = normalizeUserMID(c.Mid)
+			// A display-name match is not authority to accept malformed, unsolicited
+			// or conflicting identities from a contact response.
+			if !isCanonicalUserMID(c.Mid) || normalizeUserMID(key) != c.Mid || !requested[c.Mid] || keyCounts[c.Mid] != 1 {
+				lookupDiagnostic(ctx, "search", "contact_validation", "rejected", 0)
+				fallbackErr = fmt.Errorf("LINE contact search returned invalid or ambiguous user MIDs")
 				continue
 			}
 			name := strings.ToLower(c.EffectiveDisplayName())
 			if lowerQuery == "" || strings.Contains(name, lowerQuery) {
+				lc.setCachedContact(c.Mid, c)
 				if r := lc.midToResolveIdentifier(ctx, c.Mid); r != nil {
 					results = append(results, r)
 				}
@@ -384,6 +430,14 @@ func (lc *LineClient) SearchUsers(ctx context.Context, query string) ([]*bridgev
 		}
 	}
 
+	if len(results) == 0 {
+		if exactErr != nil {
+			return nil, fmt.Errorf("exact LINE lookup failed and no matching contacts were found: %w", exactErr)
+		}
+		if fallbackErr != nil {
+			return nil, fallbackErr
+		}
+	}
 	return results, nil
 }
 
