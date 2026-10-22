@@ -132,3 +132,77 @@ func TestQRFailureDetailIsNotBuiltFromUnrelatedErrors(t *testing.T) {
 		t.Fatal("unrelated error was reported as a QR failure")
 	}
 }
+
+func TestQRVerificationTemporarilyUnavailable(t *testing.T) {
+	var output bytes.Buffer
+	logger := zerolog.New(&output)
+	lc := newResolutionClient(t, func(req *http.Request) (*http.Response, error) {
+		method := req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:]
+		switch method {
+		case "createSession":
+			return resolutionResponse(`{"code":0,"data":{"authSessionId":"qr-session"}}`), nil
+		case "createQrCode":
+			return resolutionResponse(`{"code":0,"data":{"callbackUrl":"line://au/q/test","longPollingMaxCount":1}}`), nil
+		case "checkQrCodeVerified":
+			return resolutionResponse(`{"code":0,"data":{}}`), nil
+		case "verifyCertificate":
+			resp := resolutionResponse(`{"code":1,"data":{}}`)
+			resp.StatusCode = http.StatusBadRequest
+			return resp, nil
+		case "createPinCode":
+			return resolutionResponse(`{"code":0,"data":{"pinCode":"123456"}}`), nil
+		case "checkPinCodeVerified":
+			return resolutionResponse(`{"code":0,"data":{}}`), nil
+		case "qrCodeLoginV2":
+			resp := resolutionResponse(`{"code":10051,"data":{"name":"SecondaryQrCodeException","code":100,"alertMessage":"Verification is temporarily unavailable"}}`)
+			resp.StatusCode = http.StatusBadRequest
+			return resp, nil
+		default:
+			return nil, fmt.Errorf("unexpected QR RPC: %s", method)
+		}
+	})
+	lc.UserLogin.User.Log = logger
+	lq := &LineQRLogin{login: &LineEmailLogin{User: lc.UserLogin.User}}
+	defer lq.Cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := lq.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lq.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, err := lq.Wait(ctx)
+	if err == nil {
+		t.Fatal("verification unavailable QR login was accepted")
+	}
+	var respErr bridgev2.RespError
+	if !errors.As(err, &respErr) {
+		t.Fatalf("QR rejection is not a user-facing error: %v", err)
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &event); err != nil {
+		t.Fatalf("failed to parse log event: %v\n%s", err, output.String())
+	}
+	if event["auth_error_category"] != "VERIFICATION_TEMPORARILY_UNAVAILABLE" {
+		t.Fatalf("auth_error_category = %v, want VERIFICATION_TEMPORARILY_UNAVAILABLE", event["auth_error_category"])
+	}
+	if event["provider_alert_status"] != "recognized" {
+		t.Fatalf("provider_alert_status = %v, want recognized", event["provider_alert_status"])
+	}
+	if event["cooldown_triggered"] != true {
+		t.Fatalf("cooldown_triggered = %v, want true", event["cooldown_triggered"])
+	}
+	if event["retry_recommended"] != true {
+		t.Fatalf("retry_recommended = %v, want true", event["retry_recommended"])
+	}
+	if event["temporary"] != true {
+		t.Fatalf("temporary = %v, want true", event["temporary"])
+	}
+	for _, secret := range []string{"Verification is temporarily unavailable"} {
+		if strings.Contains(respErr.Err, secret) || strings.Contains(err.Error(), secret) {
+			t.Fatalf("provider text leaked into the user-facing error: %v", err)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -32,6 +33,7 @@ const (
 	loginRateLimitNone loginRateLimitKind = iota
 	loginRateLimitLocked
 	loginRateLimitRetryLater
+	loginRateLimitVerificationUnavailable
 )
 
 // loginCooldown tracks when each account may try to sign in again. It is
@@ -79,11 +81,28 @@ func (c *loginCooldown) remaining(userID string) time.Duration {
 // classifyLoginRateLimit reports whether a login rejection is an account login
 // rate limit. LINE does not name the condition in every response, so the
 // explicit signals are used: HTTP 429, the fixed "too many login attempts"
-// reason, or a request to come back later.
+// reason, or a request to come back later. If the error carries a structured
+// AuthError, its category is authoritative.
 func classifyLoginRateLimit(err error) loginRateLimitKind {
 	if err == nil {
 		return loginRateLimitNone
 	}
+
+	// Prefer the structured AuthError classification when available.
+	var ae *line.AuthError
+	if errors.As(err, &ae) {
+		switch ae.Category {
+		case line.AuthErrorTooManyAttempts:
+			return loginRateLimitLocked
+		case line.AuthErrorRetryLater:
+			return loginRateLimitRetryLater
+		case line.AuthErrorVerificationTemporarilyUnavailable:
+			return loginRateLimitVerificationUnavailable
+		default:
+			return loginRateLimitNone
+		}
+	}
+
 	if detail, ok := line.QRLoginFailureDetail(err); ok {
 		if detail.HTTPStatus == http.StatusTooManyRequests {
 			return loginRateLimitLocked
@@ -103,7 +122,14 @@ func classifyLoginRateLimit(err error) loginRateLimitKind {
 	if isLoginRateLimitText(details.ErrorReason) || isLoginRateLimitText(details.ErrorMessage) {
 		return loginRateLimitLocked
 	}
+	if isVerificationTemporarilyUnavailableText(details.ErrorReason) || isVerificationTemporarilyUnavailableText(details.ErrorMessage) {
+		return loginRateLimitVerificationUnavailable
+	}
 	return loginRateLimitNone
+}
+
+func isVerificationTemporarilyUnavailableText(text string) bool {
+	return strings.EqualFold(strings.TrimSpace(text), "verification is temporarily unavailable")
 }
 
 func isLoginRateLimitText(text string) bool {
@@ -126,6 +152,8 @@ func (ll *LineEmailLogin) noteLoginRateLimit(err error) {
 		ll.cooldown.block(string(ll.User.MXID), now.Add(loginRateLimitCooldown))
 	case loginRateLimitRetryLater:
 		ll.cooldown.block(string(ll.User.MXID), now.Add(loginRetryLaterCooldown))
+	case loginRateLimitVerificationUnavailable:
+		ll.cooldown.block(string(ll.User.MXID), now.Add(verificationTemporarilyUnavailableCooldown))
 	}
 }
 

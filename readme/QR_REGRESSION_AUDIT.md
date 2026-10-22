@@ -96,6 +96,35 @@ The cooldown lengths are conservative defaults, not measured LINE values. The
 bridge cannot know how long the account stays locked, so it waits and reports
 the remaining time instead of guessing an exact unlock moment.
 
+## Structured authentication errors
+
+LINE login failures are now normalized into a structured `AuthError` model in
+`pkg/line/auth_error.go` before they reach connector logic:
+
+* Provider-specific exception names, codes, reasons and alerts are classified
+  into stable categories such as `TOO_MANY_ATTEMPTS`, `RETRY_LATER`,
+  `VERIFICATION_TEMPORARILY_UNAVAILABLE`, `INVALID_CONTEXT`/`QR_CONTEXT_EXPIRED`,
+  `QR_LOGIN_NOT_ALLOWED`, etc.
+* Provider text is never exposed directly. Fixed schema labels and a small
+  allowlist of safe reason strings are used; everything else is recorded as
+  `unrecognized`/`redacted`.
+* Each `AuthError` carries flags (`retry_recommended`, `temporary`,
+  `user_action_required`, `bridge_failure`, `cooldown_triggered`) and a safe
+  `provider_alert_status` (`recognized`, `unrecognized`, `absent`).
+* The connector uses these categories to pick user-facing messages, decide
+  whether a cooldown applies, and emit structured log fields. Raw error strings
+  still appear in logs only at the original wrapped error level.
+
+## Extended cooldown handling
+
+A confirmed "Verification is temporarily unavailable" alert now triggers its
+own cooldown category (`loginRateLimitVerificationUnavailable`) with a
+10-minute bridge-side wait. This prevents rapid retry loops when LINE indicates
+verification is temporarily unavailable, while still allowing a fresh attempt
+after the cooldown expires. The category is detected both from the structured
+`AuthError` and, as a fallback, from the raw provider reason text during email
+login.
+
 ## Actual shortcomings corrected locally
 
 1. The diagnostic allowlist omitted `SecondaryQrCodeException`, and did not inspect

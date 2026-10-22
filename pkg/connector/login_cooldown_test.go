@@ -117,6 +117,38 @@ func TestQRRateLimitIsReportedAndBlocksImmediateRetry(t *testing.T) {
 	}
 }
 
+func TestVerificationTemporarilyUnavailableBlocksRetry(t *testing.T) {
+	oldLogin := loginWithCredentials
+	t.Cleanup(func() { loginWithCredentials = oldLogin })
+	loginWithCredentials = func(_, _, _ string) (*line.LoginResult, error) {
+		return nil, errors.New(`login failed: API error 400: {"code":10051,"data":{"name":"TalkException","reason":"Verification is temporarily unavailable"}}`)
+	}
+	logger := zerolog.New(io.Discard)
+	var cooldown loginCooldown
+	ll := &LineEmailLogin{
+		User: &bridgev2.User{
+			User:   &database.User{MXID: "@user:example.com"},
+			Bridge: &bridgev2.Bridge{Log: logger},
+			Log:    logger,
+		},
+		cooldown: &cooldown,
+	}
+	step, err := ll.SubmitUserInput(context.Background(), map[string]string{
+		"email":    "user@example.com",
+		"password": "secret",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if step == nil {
+		t.Fatal("expected error step, got nil")
+	}
+	remaining := cooldown.remaining("@user:example.com")
+	if remaining <= verificationTemporarilyUnavailableCooldown-time.Minute || remaining > verificationTemporarilyUnavailableCooldown {
+		t.Fatalf("unexpected cooldown remaining: %s", remaining)
+	}
+}
+
 func TestQRRejectionWithoutRateLimitDoesNotBlockRetry(t *testing.T) {
 	connector, user, err := runQRLoginToRejection(t, `{"code":10051,"data":{"name":"SecondaryQrCodeException","code":2}}`, http.StatusBadRequest)
 	if err == nil {
@@ -195,6 +227,7 @@ func TestLoginRateLimitClassification(t *testing.T) {
 		{"invalid credentials", errors.New("login failed: API error 400: {\"code\":10051,\"data\":{\"name\":\"TalkException\",\"reason\":\"Account ID or password is invalid\"}}"), loginRateLimitNone},
 		{"unrelated", errors.New("network unreachable"), loginRateLimitNone},
 		{"nil", nil, loginRateLimitNone},
+		{"verification temporarily unavailable via AuthError", wrapLineLoginError(errors.New(`login failed: API error 400: {"code":10051,"data":{"name":"TalkException","reason":"Verification is temporarily unavailable"}}`)), loginRateLimitVerificationUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := classifyLoginRateLimit(tc.err); got != tc.want {
